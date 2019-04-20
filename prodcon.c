@@ -6,28 +6,42 @@
 #include <string.h>
 #include "prodcon.h"
 
-
 struct llist_node {
     struct llist_node *next;
     char *str;
 };
 
-pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
-pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
+// struct llist_node **allocate_node(char *str, struct llist_node *next) {
+//     struct llist_node *node = malloc(sizeof *node);
+//     node->str = str;
+//     node->next = next;
+//     return &node;
+// };
+
+// pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+// pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
 
 //LinkedList
 //lock for each for each thread
 
+
+pthread_mutex_t *lock;
+pthread_cond_t *cond;
+
 static struct llist_node **heads; //Array of head
 static assign_consumer_f assign_consumer; //assign a string to a customer - returrn customer number that the string is assigned to
-_Thread_local int my_consumer_number;
+_Thread_local int consumerID;
 static int producer_count;
 static int consumer_count;
 static int new_argc;
 static char **new_argv;
 static run_producer_f run_producer;
 static run_consumer_f run_consumer;
-static char *sentinel = "sentinel";
+static char *sentinel = NULL;
+
+// static pthread_mutex_t lock[consumer_count];
+// static pthread_cond_t cond[consumer_count];
+
 
 
 /**
@@ -39,21 +53,24 @@ static char *sentinel = "sentinel";
  */
 char *pop(struct llist_node **phead)
 {
-    pthread_mutex_lock(&lock);
-    // printf("%s\n", (*phead)->str);
+    pthread_mutex_lock(&lock[consumerID]);
+    printf("Consumer pop\n");
+
+    
+    //pop sentinel 
     while (*phead == NULL) {
-        pthread_cond_wait(&cond, &lock); 
-        // pthread_mutex_unlock(&lock);
-        // return NULL;
+        printf("--Consumer %d Waiting for product\n", consumerID);
+        pthread_cond_wait(&cond[consumerID], &lock[consumerID]); 
     }
+
+    // if ((*phead)->str == sentinel) return NULL;
 
     char *s = (*phead)->str;
     //printf("Consumer - Pop: %s\n", s);
     struct llist_node *next = (*phead)->next;
     free(*phead);
-    *phead = next; //new head
-//    pthread_cond_signal(&cond);
-    pthread_mutex_unlock(&lock);
+    *phead = next; 
+    pthread_mutex_unlock(&lock[consumerID]);
     return s;
 }
 
@@ -66,7 +83,8 @@ char *pop(struct llist_node **phead)
  */
 void push(struct llist_node **phead, const char *s)
 {
-    pthread_mutex_lock(&lock);
+    pthread_mutex_lock(&lock[consumerID]);
+
     struct llist_node *new_node = malloc(sizeof(*new_node));
     new_node->next = *phead;
 	printf("Producer  - Push: %s\n", s);
@@ -76,40 +94,57 @@ void push(struct llist_node **phead, const char *s)
         new_node->str = strdup(s);
 
     *phead = new_node;
-    pthread_cond_signal(&cond);
-    pthread_mutex_unlock(&lock);
+    pthread_cond_signal(&cond[consumerID]);
+    pthread_mutex_unlock(&lock[consumerID]);
 }
 
-// void pushEnd(struct llist_node **phead, const char *s)
+
+// void push_on_end(struct llist_node **phead, const char *s)
 // {
-//     pthread_mutex_lock(&lock);
-//     struct llist_node *new_node = malloc(sizeof(*new_node));
-//     new_node->str = sentinel;
+    
+//     struct llist_node **prev = phead;
+//     struct llist_node *curr  = *phead;
 
-//     struct llist_node *currNode = malloc(sizeof(*currNode));
-
-//     while (currNode->next != NULL){
-//         printf("Here %s\n", currNode->str);
-//         currNode = currNode->next;
-
+//     while (curr != NULL) {
+//         prev = &curr->next;
+//         curr = curr->next;
 //     }
-//     currNode->next = new_node;
-//     printf("Producer  - Push: %s\n", s);
-//     pthread_cond_signal(&cond);
-//     pthread_mutex_unlock(&lock);
+
+//     prev = allocate_node((char*)s, curr);
+
 // }
 
-// void queueSentinel(int consumer, const char *str) // push
-// {
-//     pushEnd(&heads[consumer], str);
-//     //printf("Producer assign to Con %d --> %s\n", hash, buffer);
-// }
+void pushSentinel(struct llist_node **phead, const char *s)
+{
+    pthread_mutex_lock(&lock[consumerID]);
+    struct llist_node *new_node = malloc(sizeof(*new_node));
+    new_node->str = sentinel;
 
-// the array of list heads. the size should be equal to the number of consumers
+    if (*phead == NULL) *phead = new_node;
+    else {
+        struct llist_node *curr = *phead;
+        // if (curr == NULL) curr = new_node;
+        // else {
+        // printf("Here %s\n", curr->str);
+        printf("Start %s\n", curr->str);
+        while (curr->next != NULL){
+            
+            curr = curr->next;
+            printf("Next %s\n", curr->str);
+        }
+        curr->next = new_node;
+    }   
+
+    pthread_cond_signal(&cond[consumerID]);
+    pthread_mutex_unlock(&lock[consumerID]);
+}
 
 void queue(int consumer, const char *str) // push
 {
-    push(&heads[consumer], str);
+    if (str == sentinel)
+        pushSentinel(&heads[consumer], str);
+    else
+        push(&heads[consumer], str);
     //printf("Producer assign to Con %d --> %s\n", hash, buffer);
 }
 
@@ -121,13 +156,14 @@ static void produce(const char *buffer)
 }
 
 static char *consume() {
-    char *str = pop(&heads[my_consumer_number]); // // push customer + its string from linked list
-    printf("Consumer %d Pop --> %s\n", my_consumer_number, str);
-    if (str == sentinel) {
-        //printf("Reach %s of Consumer %d\n", str, my_consumer_number);
-        return NULL;
-    }
-    else return str;
+    char *str = pop(&heads[consumerID]); // // push customer + its string from linked list
+    printf("Consumer %d Pop --> %s\n", consumerID, str);
+    // if (str == sentinel) {
+    //     //printf("Reach %s of Consumer %d\n", str, my_consumer_number);
+    //     return NULL;
+    // }
+    // else return str;
+    return str;
     //return null when consume 
 }
 
@@ -139,14 +175,14 @@ void do_usage(char *prog)
 
 void *start_producer_thread(void *i)
 {
-    run_producer((u_int64_t)i, producer_count, produce, new_argc, new_argv);
+    run_producer((size_t)i, producer_count, produce, new_argc, new_argv);
     return 0;
 }
 
 void *start_consumer_thread(void *i)
 {
-    my_consumer_number = (u_int64_t) i;
-    run_consumer((u_int64_t) i, consume, new_argc, new_argv);
+    consumerID = (size_t) i;
+    run_consumer((size_t) i, consume, new_argc, new_argv);
     return 0;
 }
 
@@ -189,7 +225,23 @@ int main(int argc, char **argv)
     }
 
     //Create customer
+    // static pthread_mutex_t lock[consumer_count];
+    // static pthread_cond_t cond[consumer_count];
     heads = calloc(consumer_count, sizeof(*heads));
+
+    pthread_mutex_t lockTemp[consumer_count];
+    pthread_cond_t condTemp[consumer_count];
+
+    for (int i = 0; i < consumer_count; i++) {
+        pthread_mutex_init(&lockTemp[i], NULL);
+        pthread_cond_init(&condTemp[i], NULL);
+    }
+    
+    lock = lockTemp;
+    cond = condTemp;
+
+    // pthread_mutex_init( &lock, NULL);
+    // pthread_cond_init( &full, NULL);
     
     //Start Producers
     pthread_t prod_threads[producer_count];
@@ -198,15 +250,16 @@ int main(int argc, char **argv)
     }
 
 
-    for(int i = 0; i < consumer_count; i++) {
-        // printf("Add %s to %d\n", sentinel, i);
-        queue(i, sentinel);
-        printf("Add %s to Con %d\n", sentinel, i);
-    }
+    // for(int i = 0; i < consumer_count; i++) {
+    //     // printf("Add %s to %d\n", sentinel, i);
+    //     queue(i, sentinel);
+    //     printf("Add %s to Con %d\n", sentinel, i);
+    // }
 
     //Start Consumers
     pthread_t con_threads[consumer_count];
     for (int i = 0; i < consumer_count; i++) {
+        printf("Run Consumers %d\n", i);
         pthread_create(&con_threads[i], NULL, start_consumer_thread, (void *)(size_t) i);
     }
 
@@ -214,26 +267,28 @@ int main(int argc, char **argv)
     for(int i = 0; i < producer_count; i++) {
         void *v;
         pthread_join(prod_threads[i], &v);
-        printf("Producer DONE\n");
+        printf("Producer %d DONE\n", i);
         //all producers are done 
         //sentinel - signal consumers that producers are done 
     }
 
-    
-    //printAll();
 
     //Add Sentinel Nodes
-    // for(int i = 0; i < consumer_count; i++) {
-    //     // printf("Add %s to %d\n", sentinel, i);
-    //     queue(i, sentinel);
-    //     printf("Add %s to Con %d\n", sentinel, i);
-    // }
+    for(int i = 0; i < consumer_count; i++) {
+        // printf("Add %s to %d\n", sentinel, i);
+        queue(i, sentinel);
+        printf("Add %s to Con %d\n", sentinel, i);
+    }
+
+    for(int i = 0; i < consumer_count; i++) {
+        pthread_cond_signal(&cond[i]);
+    }
 
     //Consumer Finished
     for(int i = 0; i < consumer_count; i++) {
         void *v;
+        printf("Consumer %d DONE\n", i);
         pthread_join(con_threads[i], &v);
-        printf("Consumer DONE\n");
     }
     printf("End\n");
     return 0;
