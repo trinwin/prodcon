@@ -1,4 +1,4 @@
-# prodcons
+# prodcon
 Create a multi-threaded producer/consumer engine. The engine will be supplied shared libraries with producer/consumer logic that the engine will run on.
 
 ## Compilation
